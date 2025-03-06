@@ -48,10 +48,10 @@ research-paper-retrieval-system
 ├── .gitignore
 └── README.md
 ```
-![Web-1](Assets/WhatsApp Image 2025-03-07 at 01.38.09_a9f36af7.jpg)
+![Web-1](Assets/WhatsApp_Image_2025-03-07_at_01.38.09_a9f36af7.jpg) 
 
 
-![Web-2](Assets/WhatsApp Image 2025-03-07 at 01.38.26_2efae625.jpg)
+![Web-2](Assets/WhatsApp_Image_2025-03-07_at_01.38.26_2efae625.jpg)
 
 ## Installation
 To set up the project, clone the repository and install the required dependencies:
