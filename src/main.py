@@ -1,10 +1,19 @@
 from fastapi import FastAPI
 from agents.retrieval_agent import RetrievalAgent
 from agents.query_agent import QueryAgent
+import os
+from pathlib import Path
 
 app = FastAPI()
 
-retrieval_agent = RetrievalAgent()
+# Define index path relative to project root
+data_dir = Path(__file__).parent.parent / "data"
+index_path = str(data_dir / "paper_index")
+
+# Ensure directory exists
+os.makedirs(data_dir, exist_ok=True)
+
+retrieval_agent = RetrievalAgent(index_path=index_path)
 query_agent = QueryAgent(retrieval_agent)
 
 @app.get("/")
