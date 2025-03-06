@@ -1,27 +1,4 @@
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
-from agents.retrieval_agent import RetrievalAgent
-from agents.query_agent import QueryAgent
-import os
-from pathlib import Path
-import uvicorn
 
-app = FastAPI()
-
-# Define index path relative to project root
-data_dir = Path(__file__).parent.parent / "data"
-index_path = str(data_dir / "paper_index")
-
-# Create templates directory if it doesn't exist
-templates_dir = Path(__file__).parent.parent / "templates"
-os.makedirs(templates_dir, exist_ok=True)
-
-# Create a simple HTML template if it doesn't exist
-index_html_path = templates_dir / "index.html"
-if not index_html_path.exists():
-    with open(index_html_path, 'w') as f:
-        f.write("""
         <!DOCTYPE html>
         <html>
         <head>
@@ -96,29 +73,4 @@ if not index_html_path.exists():
             </script>
         </body>
         </html>
-        """)
-
-templates = Jinja2Templates(directory=str(templates_dir))
-
-# Ensure directory exists
-os.makedirs(data_dir, exist_ok=True)
-
-retrieval_agent = RetrievalAgent(index_path=index_path)
-query_agent = QueryAgent(retrieval_agent)
-
-@app.get("/", response_class=HTMLResponse)
-async def read_root(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
-
-@app.post("/search/")
-def search_papers(query: str):
-    results = query_agent.process_query(query)
-    return {"results": results}
-
-@app.get("/health/")
-def health_check():
-    return {"status": "healthy"}
-
-# Run the server directly when this file is executed
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+        

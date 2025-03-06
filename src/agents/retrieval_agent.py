@@ -4,13 +4,23 @@ import numpy as np
 from agents.base_agent import BaseAgent
 from utils.text_embeddings import TextEmbeddings
 from models.paper import Paper
-import faiss
 import json
 from rank_bm25 import BM25Okapi
 import logging
+from utils.arxiv_fetcher import ArxivFetcher
+from utils.semantic_scholar_fetcher import SemanticScholarFetcher
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Try to import FAISS but handle failure gracefully
+try:
+    import faiss
+    FAISS_AVAILABLE = True
+    logger.info("FAISS library loaded successfully")
+except ImportError:
+    FAISS_AVAILABLE = False
+    logger.warning("FAISS library not available. Will fall back to BM25 search only.")
 
 class RetrievalAgent(BaseAgent):
     def __init__(self, index_path):
@@ -26,6 +36,11 @@ class RetrievalAgent(BaseAgent):
         self.paper_texts = []
         self.faiss_index = None
         self.bm25 = None
+        
+        # Initialize external API fetchers
+        self.arxiv_fetcher = ArxivFetcher(max_results=10)
+        self.semantic_scholar_fetcher = SemanticScholarFetcher()
+        
         self.initialize()
         
     def initialize(self):
@@ -123,7 +138,82 @@ class RetrievalAgent(BaseAgent):
         if self.faiss_index is not None:
             faiss.write_index(self.faiss_index, f"{self.index_path}_faiss.index")
     
+    def search_external(self, query):
+        """
+        Search for papers using external APIs
+        
+        Args:
+            query (str): The search query
+            
+        Returns:
+            list: List of Paper objects from external sources
+        """
+        if query is None or not query.strip():
+            return []
+            
+        logger.info(f"Searching external sources for: {query}")
+        
+        # Search ArXiv
+        arxiv_results = self.arxiv_fetcher.search_papers(query)
+        
+        # Search Semantic Scholar
+        semantic_scholar_results = self.semantic_scholar_fetcher.search_papers(query)
+        
+        # Combine results
+        combined_results = arxiv_results + semantic_scholar_results
+        
+        # Remove duplicates based on title (simple approach)
+        unique_papers = []
+        seen_titles = set()
+        
+        for paper in combined_results:
+            if paper.title not in seen_titles:
+                seen_titles.add(paper.title)
+                unique_papers.append(paper)
+                
+        logger.info(f"Found {len(unique_papers)} unique papers from external sources")
+        return unique_papers
+
     def search(self, query):
+        """
+        Search for papers matching the query using both local index and external APIs.
+        
+        Args:
+            query (str): The search query
+            
+        Returns:
+            list: A list of relevant Paper objects
+        """
+        if query is None or not query.strip():
+            logger.warning("Empty query received")
+            return []
+        
+        logger.info(f"Searching for papers matching query: '{query}'")
+        
+        # Local search
+        local_results = self._search_local(query)
+        
+        # External search if local search returns few results
+        external_results = []
+        if len(local_results) < 5:  # Arbitrary threshold
+            external_results = self.search_external(query)
+        
+        # Combine results
+        all_results = local_results + external_results
+        
+        # Remove duplicates based on title
+        unique_papers = []
+        seen_titles = set()
+        
+        for paper in all_results:
+            if paper.title not in seen_titles:
+                seen_titles.add(paper.title)
+                unique_papers.append(paper)
+                
+        logger.info(f"Found {len(unique_papers)} total unique papers")
+        return unique_papers
+        
+    def _search_local(self, query):
         """
         Search for papers matching the query using both BM25 and FAISS.
         
@@ -133,28 +223,26 @@ class RetrievalAgent(BaseAgent):
         Returns:
             list: A list of relevant Paper objects
         """
-        if query is None:
-            raise TypeError("Query cannot be None")
+        # Your existing search code here
+        # BM25 search - always available
+        bm25_results = self._bm25_search(query, top_k=5)
         
-        if not query.strip():
-            return []
-        
-        logger.info(f"Searching for papers matching query: '{query}'")
-        
-        # Hybrid search approach
-        bm25_results = self._bm25_search(query)
-        faiss_results = self._faiss_search(query)
+        # FAISS search - only if available
+        faiss_results = self._faiss_search(query, top_k=5) if FAISS_AVAILABLE and self.faiss_index is not None else []
         
         # Combine results (simple approach - union of both result sets)
         combined_indices = list(set(bm25_results + faiss_results))
         
-        if combined_indices:
-            results = [self.papers[i] for i in combined_indices]
-            logger.info(f"Found {len(results)} papers matching query")
-            return results
+        if not combined_indices:
+            logger.info("No local results found for query")
+            return []
         
-        logger.info("No results found for query")
-        return []
+        # Make sure we have valid indices
+        valid_indices = [i for i in combined_indices if 0 <= i < len(self.papers)]
+        
+        results = [self.papers[i] for i in valid_indices]
+        logger.info(f"Found {len(results)} papers matching query in local index")
+        return results
     
     def _bm25_search(self, query, top_k=5):
         """Search using BM25 algorithm"""
@@ -167,11 +255,12 @@ class RetrievalAgent(BaseAgent):
         # Get BM25 scores
         scores = self.bm25.get_scores(tokenized_query)
         
-        # Get top results
-        top_indices = np.argsort(scores)[::-1][:top_k]
+        # Set minimum score threshold to consider a match
+        min_score = 0.1
         
-        # Filter out zero scores
-        return [idx for idx in top_indices if scores[idx] > 0]
+        # Get top results that meet minimum score
+        top_indices = np.argsort(scores)[::-1][:top_k]
+        return [idx for idx in top_indices if scores[idx] > min_score]
     
     def _faiss_search(self, query, top_k=5):
         """Search using FAISS vector similarity"""
