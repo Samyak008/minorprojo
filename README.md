@@ -1,2 +1,0 @@
-# minorprojo
-MultiAgent Paper Researcher
