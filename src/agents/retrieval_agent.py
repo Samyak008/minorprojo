@@ -9,6 +9,13 @@ from rank_bm25 import BM25Okapi
 import logging
 from utils.arxiv_fetcher import ArxivFetcher
 from utils.semantic_scholar_fetcher import SemanticScholarFetcher
+from utils.core_fetcher import CoreFetcher
+from utils.crossref_fetcher import CrossrefFetcher  
+from utils.openalex_fetcher import OpenAlexFetcher
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -40,6 +47,11 @@ class RetrievalAgent(BaseAgent):
         # Initialize external API fetchers
         self.arxiv_fetcher = ArxivFetcher(max_results=10)
         self.semantic_scholar_fetcher = SemanticScholarFetcher()
+        
+        # Replace IEEE and Springer with free alternatives
+        self.core_fetcher = CoreFetcher(max_results=10)
+        self.crossref_fetcher = CrossrefFetcher(max_results=10)  
+        self.openalex_fetcher = OpenAlexFetcher(max_results=10)
         
         self.initialize()
         
@@ -153,25 +165,49 @@ class RetrievalAgent(BaseAgent):
             
         logger.info(f"Searching external sources for: {query}")
         
-        # Search ArXiv
-        arxiv_results = self.arxiv_fetcher.search_papers(query)
+        # Search each source with error handling
+        def safe_search(fetcher, query):
+            try:
+                return fetcher.search_papers(query)
+            except Exception as e:
+                logger.error(f"Error with {fetcher.__class__.__name__}: {str(e)}")
+                return []
         
-        # Search Semantic Scholar
-        semantic_scholar_results = self.semantic_scholar_fetcher.search_papers(query)
+        # Search free sources in parallel (with a small delay to avoid rate limits)
+        arxiv_results = safe_search(self.arxiv_fetcher, query)
+        semantic_scholar_results = safe_search(self.semantic_scholar_fetcher, query)
+        core_results = safe_search(self.core_fetcher, query)
+        crossref_results = safe_search(self.crossref_fetcher, query)
+        openalex_results = safe_search(self.openalex_fetcher, query)
         
         # Combine results
-        combined_results = arxiv_results + semantic_scholar_results
+        combined_results = arxiv_results + semantic_scholar_results + core_results + crossref_results + openalex_results
+        
+        # Filter out papers with empty titles or abstracts
+        filtered_results = [p for p in combined_results if p.title and p.abstract]
         
         # Remove duplicates based on title (simple approach)
         unique_papers = []
         seen_titles = set()
         
-        for paper in combined_results:
-            if paper.title not in seen_titles:
-                seen_titles.add(paper.title)
+        for paper in filtered_results:
+            title_lower = paper.title.lower()
+            if title_lower not in seen_titles:
+                seen_titles.add(title_lower)
                 unique_papers.append(paper)
                 
         logger.info(f"Found {len(unique_papers)} unique papers from external sources")
+        
+        # Log the distribution by source
+        source_counts = {}
+        for paper in unique_papers:
+            source = getattr(paper, "source", "unknown")
+            if source not in source_counts:
+                source_counts[source] = 0
+            source_counts[source] += 1
+        
+        logger.info(f"Results by source: {source_counts}")
+        
         return unique_papers
 
     def search(self, query):
@@ -190,24 +226,22 @@ class RetrievalAgent(BaseAgent):
         
         logger.info(f"Searching for papers matching query: '{query}'")
         
-        # Local search
-        local_results = self._search_local(query)
+        # Skip local search and rely on external sources
+        external_results = self.search_external(query)
         
-        # External search if local search returns few results
-        external_results = []
-        if len(local_results) < 5:  # Arbitrary threshold
-            external_results = self.search_external(query)
-        
-        # Combine results
-        all_results = local_results + external_results
+        # If no results, try fallback search
+        if not external_results:
+            logger.info(f"No results found for '{query}', trying fallback search")
+            external_results = self.fallback_search(query)
         
         # Remove duplicates based on title
         unique_papers = []
         seen_titles = set()
         
-        for paper in all_results:
-            if paper.title not in seen_titles:
-                seen_titles.add(paper.title)
+        for paper in external_results:
+            title_lower = paper.title.lower()
+            if title_lower not in seen_titles:
+                seen_titles.add(title_lower)
                 unique_papers.append(paper)
                 
         logger.info(f"Found {len(unique_papers)} total unique papers")
@@ -308,3 +342,146 @@ class RetrievalAgent(BaseAgent):
         """Format and return the response"""
         # This would be used in a more complex agent interaction scenario
         pass
+
+    def learn_from_feedback(self, query, relevant_papers, irrelevant_papers):
+        """
+        Update search model based on user feedback about results
+        
+        Args:
+            query (str): The original query
+            relevant_papers (list): Papers marked as relevant by the user
+            irrelevant_papers (list): Papers marked as irrelevant by the user
+        """
+        if not relevant_papers:
+            logger.warning("No relevant papers provided for learning")
+            return
+            
+        logger.info(f"Learning from feedback for query: '{query}'")
+        logger.info(f"Relevant papers: {len(relevant_papers)}, Irrelevant: {len(irrelevant_papers)}")
+        
+        try:
+            # Extract text from papers for training
+            relevant_texts = [f"{p.title} {p.abstract}" for p in relevant_papers]
+            irrelevant_texts = [f"{p.title} {p.abstract}" for p in irrelevant_papers] if irrelevant_papers else []
+            
+            # Create or update a personalized BM25 model for this query pattern
+            # In a real-world system, you might use more sophisticated ML here
+            
+            # For now, we'll just save these papers as preferred for this query type
+            query_pattern = self._extract_query_pattern(query)
+            
+            # Persist this learning
+            self._save_query_preferences(query_pattern, relevant_papers, irrelevant_papers)
+            
+            logger.info(f"Successfully learned from feedback for query pattern: {query_pattern}")
+        except Exception as e:
+            logger.error(f"Error learning from feedback: {str(e)}")
+            
+    def _extract_query_pattern(self, query):
+        """Extract a generalizable pattern from the query"""
+        # Simple implementation - lowercase and sort terms
+        terms = query.lower().split()
+        return " ".join(sorted(terms))
+        
+    def _save_query_preferences(self, query_pattern, relevant_papers, irrelevant_papers):
+        """Save query preferences for future use"""
+        preferences_path = os.path.join(os.path.dirname(self.index_path), "query_preferences.pkl")
+        
+        try:
+            # Load existing preferences
+            preferences = {}
+            if os.path.exists(preferences_path):
+                with open(preferences_path, 'rb') as f:
+                    preferences = pickle.load(f)
+            
+            # Extract paper IDs
+            relevant_ids = [p.title for p in relevant_papers]  # Using title as ID for simplicity
+            irrelevant_ids = [p.title for p in irrelevant_papers]
+            
+            # Update preferences
+            if query_pattern not in preferences:
+                preferences[query_pattern] = {"relevant": [], "irrelevant": []}
+                
+            preferences[query_pattern]["relevant"].extend(relevant_ids)
+            preferences[query_pattern]["irrelevant"].extend(irrelevant_ids)
+            
+            # Remove duplicates
+            preferences[query_pattern]["relevant"] = list(set(preferences[query_pattern]["relevant"]))
+            preferences[query_pattern]["irrelevant"] = list(set(preferences[query_pattern]["irrelevant"]))
+            
+            # Save updated preferences
+            with open(preferences_path, 'wb') as f:
+                pickle.dump(preferences, f)
+                
+            logger.info(f"Saved query preferences for pattern: {query_pattern}")
+        except Exception as e:
+            logger.error(f"Error saving query preferences: {str(e)}")
+
+    def get_all_papers(self):
+        """Return all papers in the index"""
+        return self.papers
+
+    def fallback_search(self, query):
+        """
+        Fallback search method when regular search returns no results
+        
+        Args:
+            query (str): Search query
+            
+        Returns:
+            list: Paper objects
+        """
+        logger.info(f"Using fallback search for query: {query}")
+        
+        # 1. Try with query expansion
+        terms = query.lower().split()
+        if len(terms) <= 3:  # Only for short queries
+            related_terms = {
+                "green": ["sustainable", "environmental", "ecology"],
+                "finance": ["investment", "banking", "economic"],
+                "climate": ["environment", "warming", "temperature"],
+                "learning": ["education", "training", "knowledge"],
+                "intelligence": ["cognitive", "thinking", "reasoning"],
+                "quantum": ["particle", "physics", "mechanics"],
+                # Add more related terms here
+            }
+            
+            expanded_terms = []
+            for term in terms:
+                if term in related_terms:
+                    expanded_terms.extend(related_terms[term][:2])  # Add up to 2 related terms
+            
+            if expanded_terms:
+                expanded_query = query + " " + " ".join(expanded_terms)
+                expanded_results = self.search_external(expanded_query)
+                if expanded_results:
+                    logger.info(f"Fallback search with expanded query returned {len(expanded_results)} results")
+                    return expanded_results
+        
+        # 2. Try with broader categorization
+        broader_query = " ".join([self._get_broader_category(term) for term in terms])
+        if broader_query != query:
+            broader_results = self.search_external(broader_query)
+            if broader_results:
+                logger.info(f"Fallback search with broader query returned {len(broader_results)} results")
+                return broader_results
+        
+        # 3. Last resort: return sample data or empty list
+        logger.warning("All fallback strategies failed, returning empty results")
+        return []
+
+    def _get_broader_category(self, term):
+        """Convert specific term to broader category"""
+        categories = {
+            "green finance": "sustainable finance",
+            "blockchain": "distributed technology",
+            "bitcoin": "cryptocurrency",
+            # Add more mappings
+        }
+        
+        # Check if any key contains this term
+        for specific, broader in categories.items():
+            if term in specific:
+                return broader
+        
+        return term

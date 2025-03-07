@@ -1,14 +1,15 @@
 import requests
 import logging
+import os
 from models.paper import Paper
 
 logger = logging.getLogger(__name__)
 
 class SemanticScholarFetcher:
     def __init__(self, api_key=None):
-        self.api_key = api_key
+        self.api_key = api_key or os.getenv("SEMANTIC_SCHOLAR_API_KEY")
         self.base_url = "https://api.semanticscholar.org/graph/v1"
-        self.headers = {"x-api-key": api_key} if api_key else {}
+        self.headers = {"x-api-key": self.api_key} if self.api_key else {}
         
     def search_papers(self, query, limit=20):
         """

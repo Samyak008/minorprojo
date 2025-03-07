@@ -3,11 +3,17 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from agents.retrieval_agent import RetrievalAgent
 from agents.query_agent import QueryAgent
+from agents.learning_agent import LearningAgent
+from models.paper import Paper
 import os
 from pathlib import Path
 import uvicorn
+from dotenv import load_dotenv
 
 app = FastAPI()
+
+# Load environment variables
+load_dotenv()
 
 # Define index path relative to project root
 data_dir = Path(__file__).parent.parent / "data"
@@ -105,15 +111,65 @@ os.makedirs(data_dir, exist_ok=True)
 
 retrieval_agent = RetrievalAgent(index_path=index_path)
 query_agent = QueryAgent(retrieval_agent)
+learning_agent = LearningAgent(retrieval_agent, query_agent)
 
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/search/")
-def search_papers(query: str):
-    results = query_agent.process_query(query)
-    return {"results": results}
+def search_papers(query: str, user_id: str = "anonymous"):
+    """
+    Search for papers matching the query
+    
+    Args:
+        query (str): The search query
+        user_id (str): User identifier for personalization
+        
+    Returns:
+        dict: Search results
+    """
+    # Apply query improvements from learning
+    improved_query = learning_agent.improve_query(query)
+    
+    # Get base results
+    base_results = query_agent.process_query(improved_query)
+    
+    # Apply personalization if user_id is provided
+    if user_id != "anonymous":
+        personalized_results = learning_agent.get_personalized_results(user_id, query, base_results)
+        return {"results": personalized_results, "improved_query": improved_query if improved_query != query else None}
+    
+    return {"results": base_results, "improved_query": improved_query if improved_query != query else None}
+
+# Add feedback endpoint
+@app.post("/feedback/")
+def submit_feedback(user_id: str, query: str, paper_ids: list, clicked: list, time_spent: float, ratings: dict = None):
+    """Record user feedback for learning"""
+    # Convert paper IDs back to papers
+    papers = [Paper(id=pid, title=pid) for pid in paper_ids]  # Simplified
+    clicked_papers = [Paper(id=pid, title=pid) for pid in clicked]
+    
+    learning_agent.record_user_interaction(
+        user_id=user_id,
+        query=query,
+        results=papers,
+        clicked_papers=clicked_papers,
+        time_spent=time_spent,
+        explicit_feedback=ratings
+    )
+    
+    return {"status": "success"}
+
+# Add recommendations endpoint
+@app.get("/recommendations/{paper_id}")
+def get_recommendations(paper_id: str):
+    """Get recommendations for similar papers"""
+    # In a real implementation, you'd retrieve the full paper
+    paper = Paper(id=paper_id, title=paper_id)
+    
+    recommendations = learning_agent.recommend_related_papers(paper)
+    return {"recommendations": [query_agent._paper_to_dict(p) for p in recommendations]}
 
 @app.get("/health/")
 def health_check():
