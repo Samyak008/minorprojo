@@ -3,16 +3,17 @@
 A multi-agent AI platform for searching, personalizing, and recommending research papers from multiple sources (e.g., arXiv, Semantic Scholar, CORE, Crossref, OpenAlex, etc.). This system uses FastAPI for the backend, Sentence-Transformers for embedding and similarity, and BM25 or FAISS for indexing locally stored paper metadata.
 
 ## Table of Contents
-1. [Features](#features)
-2. [Directory Structure](#directory-structure)
-3. [System Overview](#system-overview)
-4. [Setup and Installation](#setup-and-installation)
-5. [Environment Variables](#environment-variables)
-6. [Running the Application](#running-the-application)
-7. [Usage and Endpoints](#usage-and-endpoints)
-8. [Testing](#testing)
-9. [Extending the System](#extending-the-system)
-10. [License](#license)
+1. [Features](#1-features)
+2. [Directory Structure](#2-directory-structure)
+3. [System Overview](#3-system-overview)
+4. [Setup and Installation](#4-setup-and-installation)
+5. [Environment Variables](#5-environment-variables)
+6. [Running the Application](#6-running-the-application)
+7. [Usage and Endpoints](#7-usage-and-endpoints)
+8. [Testing](#8-testing)
+9. [Extending the System](#9-extending-the-system)
+10. [License](#10-license)
+
 
 ## 1. Features
 - **Multi-agent architecture:**
