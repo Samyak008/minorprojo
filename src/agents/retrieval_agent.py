@@ -152,7 +152,7 @@ class RetrievalAgent(BaseAgent):
     
     def search_external(self, query):
         """
-        Search for papers using external APIs
+        Search for papers using external APIs with improved error handling and source-specific optimizations
         
         Args:
             query (str): The search query
@@ -165,42 +165,97 @@ class RetrievalAgent(BaseAgent):
             
         logger.info(f"Searching external sources for: {query}")
         
-        # Search each source with error handling
-        def safe_search(fetcher, query):
-            try:
-                return fetcher.search_papers(query)
-            except Exception as e:
-                logger.error(f"Error with {fetcher.__class__.__name__}: {str(e)}")
-                return []
+        # Source-specific query optimizations
+        openalex_query = query
+        crossref_query = query
         
-        # Search free sources in parallel (with a small delay to avoid rate limits)
-        arxiv_results = safe_search(self.arxiv_fetcher, query)
-        semantic_scholar_results = safe_search(self.semantic_scholar_fetcher, query)
-        core_results = safe_search(self.core_fetcher, query)
-        crossref_results = safe_search(self.crossref_fetcher, query)
-        openalex_results = safe_search(self.openalex_fetcher, query)
+        # Crossref works better with more specific terms
+        if len(query.split()) <= 2:
+            crossref_query = f"{query} research paper academic"
+            
+        # OpenAlex works better with field-specific searches for short queries
+        if len(query.split()) <= 2:
+            openalex_query = f"{query} title:{query} abstract:{query}"
         
-        # Combine results
-        combined_results = arxiv_results + semantic_scholar_results + core_results + crossref_results + openalex_results
+        # Concurrent API fetching to improve performance
+        results = {}
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            # Submit all search tasks
+            future_to_source = {
+                executor.submit(self.arxiv_fetcher.search_papers, query): "arxiv",
+                executor.submit(self.semantic_scholar_fetcher.search_papers, query): "semantic_scholar",
+                executor.submit(self.core_fetcher.search_papers, query): "core",
+                executor.submit(self.crossref_fetcher.search_papers, crossref_query): "crossref",
+                executor.submit(self.openalex_fetcher.search_papers, openalex_query): "openalex"
+            }
+            
+            # Process results as they complete
+            for future in concurrent.futures.as_completed(future_to_source):
+                source = future_to_source[future]
+                try:
+                    results[source] = future.result()
+                    logger.info(f"Found {len(results[source])} papers from {source}")
+                except Exception as e:
+                    logger.error(f"Error with {source}: {str(e)}")
+                    results[source] = []
         
-        # Filter out papers with empty titles or abstracts
-        filtered_results = [p for p in combined_results if p.title and p.abstract]
+        # Define minimum papers per source and maximum total papers
+        min_papers_per_source = 2  # At least 2 papers from each source if available
+        max_total_papers = 30
         
-        # Remove duplicates based on title (simple approach)
-        unique_papers = []
-        seen_titles = set()
+        # Balance results from different sources
+        balanced_results = []
         
-        for paper in filtered_results:
-            title_lower = paper.title.lower()
-            if title_lower not in seen_titles:
-                seen_titles.add(title_lower)
-                unique_papers.append(paper)
+        # First, ensure we have minimum representation from each source
+        for source, papers in results.items():
+            if papers:
+                # Take at least min_papers_per_source from each source (or all if fewer available)
+                balanced_results.extend(papers[:min_papers_per_source])
+        
+        # Track which papers we've already included (to avoid duplicates)
+        included_papers = set(self._normalize_title(paper.title) for paper in balanced_results)
+        
+        # Fill remaining slots with papers from any source, maintaining diversity
+        remaining_slots = max_total_papers - len(balanced_results)
+        if remaining_slots > 0:
+            # Create a round-robin selection from each source
+            source_papers = {source: papers[min_papers_per_source:] for source, papers in results.items()}
+            
+            # Keep going until we fill all slots or run out of papers
+            while remaining_slots > 0:
+                added_paper = False
                 
-        logger.info(f"Found {len(unique_papers)} unique papers from external sources")
+                # Try to add one paper from each source in turn
+                for source in list(source_papers.keys()):
+                    if not source_papers[source]:
+                        # No more papers for this source
+                        source_papers.pop(source)
+                        continue
+                        
+                    # Get next paper from this source
+                    next_paper = source_papers[source].pop(0)
+                    
+                    # Check if this is a duplicate
+                    title_key = self._normalize_title(next_paper.title)
+                    if title_key not in included_papers:
+                        balanced_results.append(next_paper)
+                        included_papers.add(title_key)
+                        remaining_slots -= 1
+                        added_paper = True
+                        
+                    if remaining_slots <= 0:
+                        break
+                
+                # If we couldn't add any papers in this round, we're done
+                if not added_paper or not source_papers:
+                    break
+        
+        logger.info(f"Balanced results: {len(balanced_results)} total papers from multiple sources")
         
         # Log the distribution by source
         source_counts = {}
-        for paper in unique_papers:
+        for paper in balanced_results:
             source = getattr(paper, "source", "unknown")
             if source not in source_counts:
                 source_counts[source] = 0
@@ -208,7 +263,18 @@ class RetrievalAgent(BaseAgent):
         
         logger.info(f"Results by source: {source_counts}")
         
-        return unique_papers
+        return balanced_results
+
+    def _normalize_title(self, title):
+        """Normalize title for duplicate detection"""
+        import re
+        # Remove punctuation, lowercase, and remove common words
+        normalized = re.sub(r'[^\w\s]', '', title.lower())
+        words = normalized.split()
+        # Remove very common words
+        stopwords = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'with', 'by'}
+        filtered = [w for w in words if w not in stopwords]
+        return ' '.join(filtered)
 
     def search(self, query):
         """
