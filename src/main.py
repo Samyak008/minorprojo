@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import uvicorn
 from dotenv import load_dotenv
+from rag_gym import RAGGym
 
 app = FastAPI()
 
@@ -113,14 +114,22 @@ retrieval_agent = RetrievalAgent(index_path=index_path)
 query_agent = QueryAgent(retrieval_agent)
 learning_agent = LearningAgent(retrieval_agent, query_agent)
 
+# Add RAG-Gym initialization after the other agents
+rag_gym = RAGGym(
+    retrieval_agent=retrieval_agent,
+    query_agent=query_agent,
+    learning_agent=learning_agent
+)
+
 @app.get("/", response_class=HTMLResponse)
 async def read_root(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
+# Modify the search endpoint to use RAG-Gym's step-wise search
 @app.post("/search/")
 def search_papers(query: str, user_id: str = "anonymous"):
     """
-    Search for papers matching the query
+    Search for papers using RAG-Gym's step-wise retrieval logic
     
     Args:
         query (str): The search query
@@ -129,39 +138,90 @@ def search_papers(query: str, user_id: str = "anonymous"):
     Returns:
         dict: Search results
     """
-    # Apply query improvements from learning
-    improved_query = learning_agent.improve_query(query)
+    # Start RAG-Gym session
+    session_id = rag_gym.start_session(user_id, query)
     
-    # Get base results
-    base_results = query_agent.process_query(improved_query)
-    
-    # Apply personalization if user_id is provided
-    if user_id != "anonymous":
-        personalized_results = learning_agent.get_personalized_results(user_id, query, base_results)
-        return {"results": personalized_results, "improved_query": improved_query if improved_query != query else None}
-    
-    return {"results": base_results, "improved_query": improved_query if improved_query != query else None}
+    try:
+        # Perform all steps in one go instead of separate calls
+        final_result = rag_gym.complete_search(session_id)
+        return final_result
+    except Exception as e:
+        logger.error(f"RAG-Gym search error: {str(e)}")
+        # Fall back to standard search
+        improved_query = learning_agent.improve_query(query)
+        base_results = query_agent.process_query(improved_query)
+        return {
+            "results": base_results,
+            "improved_query": improved_query if improved_query != query else None
+        }
 
-# Add feedback endpoint
+# Update feedback endpoint to utilize RAG-Gym's reward modeling
 @app.post("/feedback/")
 def submit_feedback(user_id: str, query: str, paper_ids: list, clicked: list, time_spent: float, ratings: dict = None):
-    """Record user feedback for learning"""
-    # Convert paper IDs back to papers
-    papers = [Paper(id=pid, title=pid) for pid in paper_ids]  # Simplified
-    clicked_papers = [Paper(id=pid, title=pid) for pid in clicked]
+    """Record user feedback for Process Reward Modeling training"""
+    # Convert paper IDs to papers once
+    papers = {pid: Paper(id=pid, title=pid) for pid in set(paper_ids + clicked)}
     
+    # Create paper lists
+    result_papers = [papers[pid] for pid in paper_ids]
+    clicked_papers = [papers[pid] for pid in clicked]
+    
+    # Record feedback in both systems in parallel
     learning_agent.record_user_interaction(
-        user_id=user_id,
-        query=query,
-        results=papers,
-        clicked_papers=clicked_papers,
-        time_spent=time_spent,
+        user_id=user_id, query=query, results=result_papers,
+        clicked_papers=clicked_papers, time_spent=time_spent, 
         explicit_feedback=ratings
+    )
+    
+    rag_gym.record_feedback(
+        user_id=user_id, query=query, results=result_papers,
+        clicked_papers=clicked_papers, feedback=ratings
     )
     
     return {"status": "success"}
 
-# Add recommendations endpoint
+# Add RAG-Gym training endpoints
+@app.post("/train/prm/")
+def train_prm_model(epochs: int = 10):
+    """Train Process Reward Model"""
+    success = rag_gym.train_prm_reward_model(epochs)
+    return {"status": "success" if success else "failed"}
+
+@app.post("/train/sft/")
+def train_sft_model(epochs: int = 10):
+    """Train Supervised Fine-Tuning model"""
+    success = rag_gym.train_sft_model(epochs)
+    return {"status": "success" if success else "failed"}
+
+# Add explanation endpoint that leverages RAG capabilities
+@app.get("/explain/{paper_id}")
+def explain_paper_relevance(paper_id: str, query: str):
+    """Explain why a paper is relevant to the query"""
+    paper = Paper(id=paper_id, title=paper_id)
+    paper_dict = query_agent._paper_to_dict(paper)
+    
+    if not hasattr(rag_gym, "_calculate_query_relevance"):
+        return {"error": "Explanation functionality not available"}
+        
+    # Calculate relevance directly
+    relevance_score = rag_gym._calculate_query_relevance(paper_dict, query)
+    
+    # Simplify term matching
+    query_terms = set(query.lower().split())
+    title_terms = set(paper_dict.get("title", "").lower().split())
+    abstract_terms = set(paper_dict.get("abstract", "").lower().split())
+    
+    matches = {
+        "title": list(query_terms.intersection(title_terms)),
+        "abstract": list(query_terms.intersection(abstract_terms))
+    }
+    
+    return {
+        "relevance_score": relevance_score,
+        "matches": matches,
+        "explanation": f"Relevance score: {relevance_score:.2f}. Found {len(matches['title'])} title matches and {len(matches['abstract'])} abstract matches."
+    }
+
 @app.get("/recommendations/{paper_id}")
 def get_recommendations(paper_id: str):
     """Get recommendations for similar papers"""
@@ -174,6 +234,33 @@ def get_recommendations(paper_id: str):
 @app.get("/health/")
 def health_check():
     return {"status": "healthy"}
+
+# Add session-based RAG-Gym API endpoints
+@app.post("/rag/sessions/")
+def create_session(query: str, user_id: str = "anonymous"):
+    """Create a new RAG-Gym search session"""
+    session_id = rag_gym.start_session(user_id, query)
+    return {"session_id": session_id}
+
+@app.post("/rag/sessions/{session_id}/step")
+def process_session_step(session_id: str):
+    """Process the next step in the RAG-Gym search session"""
+    result = rag_gym.step_wise_search(session_id)
+    return result
+
+@app.get("/rag/sessions/{session_id}")
+def get_session_status(session_id: str):
+    """Get the current status of a RAG-Gym search session"""
+    if session_id not in rag_gym.active_sessions:
+        return {"error": "Session not found"}
+        
+    session = rag_gym.active_sessions[session_id]
+    return {
+        "user_id": session["user_id"],
+        "query": session["original_query"],
+        "step": session["step"],
+        "results_count": len(session.get("results", []))
+    }
 
 # Run the server directly when this file is executed
 if __name__ == "__main__":

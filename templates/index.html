@@ -177,6 +177,84 @@
             padding: 20px;
             border-top: 1px solid #eee;
         }
+        .step-progress {
+            margin-top: 15px;
+            text-align: center;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background-color: #e0e0e0;
+            border-radius: 4px;
+            margin: 10px 0;
+            overflow: hidden;
+        }
+
+        .progress {
+            height: 100%;
+            background-color: #2962FF;
+            transition: width 0.3s ease;
+        }
+
+        .query-info {
+            background-color: #E3F2FD;
+            border-left: 4px solid #2962FF;
+            padding: 10px 15px;
+            margin-bottom: 15px;
+            border-radius: 0 4px 4px 0;
+            font-weight: 500;
+        }
+
+        .explanation-modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.7);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+
+        .explanation-content {
+            background-color: white;
+            padding: 25px;
+            border-radius: 8px;
+            width: 80%;
+            max-width: 600px;
+            max-height: 80%;
+            overflow-y: auto;
+        }
+
+        .explanation-details {
+            background-color: #f5f5f5;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 15px 0;
+        }
+
+        .explanation-section {
+            margin-bottom: 10px;
+        }
+
+        .explanation-section h4 {
+            margin: 0 0 5px 0;
+            color: #333;
+        }
+
+        .explanation-score {
+            text-align: right;
+            font-weight: bold;
+            color: #2962FF;
+        }
+
+        .explanation-content button {
+            display: block;
+            margin: 0 auto;
+        }
     </style>
 </head>
 <body>
@@ -225,8 +303,107 @@
             'user_' + Math.random().toString(36).substring(2, 15);
         localStorage.setItem('research_user_id', userId);
 
-        // Record when user clicks a paper
-        function recordPaperClick(paperTitle, papers) {
+        // Add to your main JavaScript in index.html
+        // Global variables for RAG-Gym session
+        let currentQuery = "";
+
+        async function searchWithRAGGym() {
+            const query = document.getElementById('search-input').value.trim();
+            if (!query) return;
+            
+            currentQuery = query;
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('results').innerHTML = '';
+            document.getElementById('results-container').style.display = 'none';
+            document.getElementById('recommendations').style.display = 'none';
+
+            try {
+                // Show "thinking" interface
+                showStepProgress("Enhancing query...", 1, 3);
+                
+                const response = await fetch(`/search/?query=${encodeURIComponent(query)}&user_id=${userId}`, {
+                    method: 'POST'
+                });
+                
+                const data = await response.json();
+                
+                // Hide progress interface
+                hideStepProgress();
+                
+                // Show loading complete
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('results-container').style.display = 'block';
+                
+                // Process results
+                allPapers = data.results || [];
+                
+                // Show improved query if available
+                if (data.improved_query) {
+                    const queryInfo = document.createElement('div');
+                    queryInfo.className = 'query-info';
+                    queryInfo.textContent = `Enhanced query: "${data.improved_query}"`;
+                    document.getElementById('results-container').prepend(queryInfo);
+                }
+                
+                // Display results
+                if (allPapers.length > 0) {
+                    document.getElementById('results-count').textContent = `Found ${allPapers.length} papers`;
+                    displayResults(allPapers);
+                } else {
+                    document.getElementById('results').innerHTML = '<p>No papers found matching your query.</p>';
+                    document.getElementById('results-count').textContent = 'No results found';
+                }
+            } catch (error) {
+                console.error('Error searching papers:', error);
+                hideStepProgress();
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('results').innerHTML = '<div class="error">Error searching papers. Please try again.</div>';
+                document.getElementById('results-container').style.display = 'block';
+                document.getElementById('results-count').textContent = 'Error occurred';
+            }
+        }
+
+        function showStepProgress(message, currentStep, totalSteps) {
+            const loadingElement = document.getElementById('loading');
+            loadingElement.innerHTML = `
+                <div class="loader"></div>
+                <div class="step-progress">
+                    <p>${message}</p>
+                    <div class="progress-bar">
+                        <div class="progress" style="width: ${(currentStep / totalSteps) * 100}%"></div>
+                    </div>
+                    <p>Step ${currentStep} of ${totalSteps}</p>
+                </div>
+            `;
+            loadingElement.style.display = 'block';
+        }
+
+        function hideStepProgress() {
+            const loadingElement = document.getElementById('loading');
+            loadingElement.innerHTML = '<div class="loader"></div>Searching papers across academic databases...';
+            loadingElement.style.display = 'none';
+        }
+
+        // Update paper click function to get explanations
+        async function getExplanation(paperId) {
+            try {
+                const response = await fetch(`/explain/${encodeURIComponent(paperId)}?query=${encodeURIComponent(currentQuery)}`);
+                const data = await response.json();
+                
+                if (data.error) {
+                    console.error("Error getting explanation:", data.error);
+                    return null;
+                }
+                
+                return data;
+            } catch (error) {
+                console.error("Error fetching explanation:", error);
+                return null;
+            }
+        }
+
+        // Update recordPaperClick to show explanations
+        async function recordPaperClick(paperTitle, papers) {
             // Find clicked paper
             const clickedPaper = papers.find(p => p.title === paperTitle);
             if (!clickedPaper) return;
@@ -234,6 +411,13 @@
             // Prepare data for feedback API
             const paperIds = papers.map(p => p.title);
             const clickedIds = [clickedPaper.title];
+            
+            // Get explanation
+            const explanation = await getExplanation(clickedPaper.title);
+            if (explanation) {
+                // Display explanation to user
+                showExplanation(clickedPaper.title, explanation);
+            }
             
             // Send to feedback API
             fetch('/feedback/', {
@@ -254,6 +438,39 @@
             
             // Load recommendations
             loadRecommendations(clickedPaper.title);
+        }
+
+        function showExplanation(paperTitle, explanation) {
+            // Create explanation modal
+            const modal = document.createElement('div');
+            modal.className = 'explanation-modal';
+            modal.innerHTML = `
+                <div class="explanation-content">
+                    <h3>Why this paper is relevant</h3>
+                    <p>${explanation.explanation}</p>
+                    <div class="explanation-details">
+                        <div class="explanation-section">
+                            <h4>Query terms in title:</h4>
+                            <p>${explanation.title_matches.length > 0 ? explanation.title_matches.join(', ') : 'None'}</p>
+                        </div>
+                        <div class="explanation-section">
+                            <h4>Query terms in abstract:</h4>
+                            <p>${explanation.abstract_matches.length > 0 ? explanation.abstract_matches.join(', ') : 'None'}</p>
+                        </div>
+                        <div class="explanation-score">
+                            Relevance score: ${(explanation.relevance_score * 100).toFixed(1)}%
+                        </div>
+                    </div>
+                    <button onclick="this.parentElement.parentElement.remove()">Close</button>
+                </div>
+            `;
+            
+            document.body.appendChild(modal);
+        }
+
+        // Update the search function to use the RAG-Gym version
+        function searchPapers() {
+            searchWithRAGGym();
         }
 
         // Load recommendations for a paper
@@ -281,52 +498,6 @@
                     recommendationsDiv.style.display = 'block';
                 })
                 .catch(error => console.error('Error loading recommendations:', error));
-        }
-
-        // Update search function to include user ID
-        async function searchPapers() {
-            const query = document.getElementById('search-input').value.trim();
-            if (!query) return;
-
-            document.getElementById('loading').style.display = 'block';
-            document.getElementById('results').innerHTML = '';
-            document.getElementById('results-container').style.display = 'none';
-            document.getElementById('recommendations').style.display = 'none';
-
-            try {
-                const response = await fetch(`/search/?query=${encodeURIComponent(query)}&user_id=${userId}`, {
-                    method: 'POST'
-                });
-                
-                const data = await response.json();
-                allPapers = data.results || [];
-                
-                // Show improved query if available
-                if (data.improved_query) {
-                    const queryInfo = document.createElement('div');
-                    queryInfo.className = 'query-info';
-                    queryInfo.textContent = `Showing results for improved query: "${data.improved_query}"`;
-                    document.getElementById('results-container').prepend(queryInfo);
-                }
-
-                // Display results
-                document.getElementById('loading').style.display = 'none';
-                document.getElementById('results-container').style.display = 'block';
-                
-                if (allPapers.length > 0) {
-                    document.getElementById('results-count').textContent = `Found ${allPapers.length} papers`;
-                    displayResults(allPapers);
-                } else {
-                    document.getElementById('results').innerHTML = '<p>No papers found matching your query.</p>';
-                    document.getElementById('results-count').textContent = 'No results found';
-                }
-            } catch (error) {
-                console.error('Error searching papers:', error);
-                document.getElementById('loading').style.display = 'none';
-                document.getElementById('results').innerHTML = '<div class="error">Error searching papers. Please try again.</div>';
-                document.getElementById('results-container').style.display = 'block';
-                document.getElementById('results-count').textContent = 'Error occurred';
-            }
         }
 
         // Update displayResults to add click handlers
