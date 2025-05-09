@@ -149,7 +149,7 @@ class RetrievalAgent(BaseAgent):
             }, f)
         
         # Save BM25 index
-        if self.bm25 is not None:
+        if self.bmṇ25 is not None:
             with open(f"{self.index_path}_bm25.pkl", 'wb') as f:
                 pickle.dump(self.bm25, f)
         
