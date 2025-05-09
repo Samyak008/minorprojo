@@ -14,6 +14,13 @@ from utils.crossref_fetcher import CrossrefFetcher
 from utils.openalex_fetcher import OpenAlexFetcher
 from dotenv import load_dotenv
 
+# Add these imports at the top
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+from collections import defaultdict
+import threading
+import time
+
 # Load environment variables
 load_dotenv()
 
@@ -142,7 +149,7 @@ class RetrievalAgent(BaseAgent):
             }, f)
         
         # Save BM25 index
-        if self.bm25 is not None:
+        if self.bmṇ25 is not None:
             with open(f"{self.index_path}_bm25.pkl", 'wb') as f:
                 pickle.dump(self.bm25, f)
         
@@ -276,9 +283,10 @@ class RetrievalAgent(BaseAgent):
         filtered = [w for w in words if w not in stopwords]
         return ' '.join(filtered)
 
+    # Update the search method in retrieval_agent.py
     def search(self, query):
         """
-        Search for papers matching the query using both local index and external APIs.
+        Search for papers matching the query using multi-hop retrieval with RAG-Gym optimization
         
         Args:
             query (str): The search query
@@ -292,24 +300,24 @@ class RetrievalAgent(BaseAgent):
         
         logger.info(f"Searching for papers matching query: '{query}'")
         
-        # Skip local search and rely on external sources
-        external_results = self.search_external(query)
+        # Use multi-hop retrieval for better results
+        external_results = self.multi_hop_retrieval(query)
         
-        # If no results, try fallback search
+        # If no results, try fallback search with expanded query
         if not external_results:
             logger.info(f"No results found for '{query}', trying fallback search")
             external_results = self.fallback_search(query)
         
-        # Remove duplicates based on title
+        # Remove duplicates
         unique_papers = []
         seen_titles = set()
         
         for paper in external_results:
-            title_lower = paper.title.lower()
-            if title_lower not in seen_titles:
-                seen_titles.add(title_lower)
+            title_key = self._normalize_title(paper.title)
+            if title_key not in seen_titles:
+                seen_titles.add(title_key)
                 unique_papers.append(paper)
-                
+                    
         logger.info(f"Found {len(unique_papers)} total unique papers")
         return unique_papers
         
@@ -551,3 +559,239 @@ class RetrievalAgent(BaseAgent):
                 return broader
         
         return term
+
+    # Add these new methods to your RetrievalAgent class
+
+    def multi_hop_retrieval(self, query, hop_count=2, max_docs_per_hop=3):
+        """Perform multi-hop retrieval using iterative feedback loops"""
+        logger.info(f"Starting multi-hop retrieval for query: '{query}'")
+        
+        # First hop - direct retrieval with the query
+        results = self.search_external(query)
+        if not results:
+            return []
+        
+        all_papers = {self._get_paper_id(p): p for p in results}
+        paper_scores = {self._get_paper_id(p): 1.0 for p in results}
+        
+        # Create query context from top results
+        query_context = query
+        
+        # Perform additional hops
+        for hop in range(1, hop_count):
+            # Select top papers and extract content
+            top_papers = sorted(
+                [(pid, score) for pid, score in paper_scores.items()],
+                key=lambda x: x[1],
+                reverse=True
+            )[:max_docs_per_hop]
+            
+            # Extract content in a single list comprehension
+            top_content = [f"{all_papers[pid].title}. {all_papers[pid].abstract[:200]}..." for pid, _ in top_papers]
+            
+            # Expand query with content from top papers
+            expanded_query = self._expand_query_with_context(query, top_content)
+            
+            # Retrieve new papers with expanded query
+            new_results = self.search_external(expanded_query)
+            
+            # Process new papers in a single loop
+            for paper in new_results:
+                paper_id = self._get_paper_id(paper)
+                if paper_id not in all_papers:
+                    all_papers[paper_id] = paper
+                    paper_scores[paper_id] = 0.9 ** hop
+        
+        # Re-rank all papers based on relevance to original query
+        return self._rerank_papers_with_sft(list(all_papers.values()), query)
+
+    def _expand_query_with_context(self, original_query, context_texts):
+        """
+        Expand query using information from context texts
+        
+        Args:
+            original_query (str): The original user query
+            context_texts (list): List of texts providing additional context
+            
+        Returns:
+            str: Expanded query
+        """
+        # Extract top keywords from context
+        all_keywords = self._extract_keywords_from_texts(context_texts)
+        
+        # Select top keywords not in original query
+        original_words = set(original_query.lower().split())
+        new_keywords = [kw for kw in all_keywords if kw not in original_words][:3]
+        
+        # Combine original query with new keywords
+        if new_keywords:
+            expanded = f"{original_query} {' '.join(new_keywords)}"
+            return expanded
+        
+        return original_query
+        
+    def _extract_keywords_from_texts(self, texts, top_n=5):
+        """Extract most important keywords from a list of texts"""
+        # Simple keyword extraction based on word frequency and filtering
+        # In a production system, you'd use a more sophisticated approach
+        word_counts = defaultdict(int)
+        
+        for text in texts:
+            if not text:
+                continue
+                
+            # Tokenize and count words
+            words = text.lower().split()
+            for word in words:
+                # Filter short words and common stopwords
+                if len(word) > 3 and word not in self._get_stopwords():
+                    word_counts[word] += 1
+        
+        # Get top keywords by frequency
+        sorted_keywords = sorted(word_counts.items(), key=lambda x: x[1], reverse=True)
+        return [word for word, _ in sorted_keywords[:top_n]]
+
+    def _get_stopwords(self):
+        """Return a set of stopwords to filter out"""
+        return {
+            'the', 'and', 'are', 'for', 'this', 'that', 'with', 'from', 'have', 'has',
+            'been', 'were', 'was', 'they', 'their', 'them', 'these', 'those', 'which',
+            'what', 'when', 'where', 'who', 'whom', 'how', 'why', 'not', 'but', 'can',
+            'will', 'should', 'could', 'would', 'may', 'might', 'must', 'shall',
+        }
+
+    def _rerank_papers_with_sft(self, papers, original_query):
+        """
+        Rerank papers using supervised fine-tuning approach
+        
+        Args:
+            papers (list): List of Paper objects to rerank
+            original_query (str): Original search query
+            
+        Returns:
+            list: Reranked list of papers
+        """
+        # Load learned preferences if available
+        learned_patterns = self._load_learned_preferences()
+        
+        # Extract best matching pattern for this query
+        best_pattern = self._find_matching_pattern(original_query, learned_patterns)
+        
+        # Score papers based on query + learned preferences
+        scored_papers = []
+        for paper in papers:
+            # Base score using embedding similarity (semantic match)
+            base_score = self._calculate_query_paper_similarity(original_query, paper)
+            
+            # Apply preference boost if we have learned data
+            preference_score = self._calculate_preference_score(paper, best_pattern)
+            
+            # Final score is a combination of base similarity and learned preferences
+            final_score = (0.7 * base_score) + (0.3 * preference_score)
+            scored_papers.append((paper, final_score))
+        
+        # Sort by final score in descending order
+        scored_papers.sort(key=lambda x: x[1], reverse=True)
+        
+        # Return only papers, without scores
+        return [paper for paper, _ in scored_papers]
+
+    def _calculate_query_paper_similarity(self, query, paper):
+        """Calculate semantic similarity between query and paper"""
+        # Generate embeddings for query and paper
+        query_embedding = self.text_embedder.generate_embeddings([query])
+        paper_text = f"{paper.title} {paper.abstract}"
+        paper_embedding = self.text_embedder.generate_embeddings([paper_text])
+        
+        # Convert to numpy and calculate cosine similarity
+        query_np = query_embedding.cpu().numpy()
+        paper_np = paper_embedding.cpu().numpy()
+        similarity = cosine_similarity(query_np, paper_np)[0][0]
+        
+        return float(similarity)
+
+    def _load_learned_preferences(self):
+        """Load learned query preferences"""
+        preferences_path = os.path.join(os.path.dirname(self.index_path), "query_preferences.pkl")
+        
+        try:
+            if os.path.exists(preferences_path):
+                with open(preferences_path, 'rb') as f:
+                    return pickle.load(f)
+        except Exception as e:
+            logger.error(f"Error loading preferences: {str(e)}")
+        
+        return {}
+
+    def _find_matching_pattern(self, query, learned_patterns):
+        """Find the best matching pattern from learned preferences"""
+        if not learned_patterns:
+            return None
+            
+        query_words = set(query.lower().split())
+        
+        best_pattern = None
+        best_overlap = 0
+        
+        for pattern in learned_patterns:
+            pattern_words = set(pattern.split())
+            overlap = len(query_words.intersection(pattern_words)) / len(pattern_words)
+            
+            if overlap > best_overlap and overlap > 0.3:  # Threshold for minimum overlap
+                best_overlap = overlap
+                best_pattern = pattern
+        
+        return best_pattern
+
+    def _calculate_preference_score(self, paper, pattern):
+        """Calculate a preference score based on learned patterns"""
+        if not pattern:
+            return 0.5  # Neutral score if no pattern
+        
+        preferences = self._load_learned_preferences().get(pattern, {})
+        
+        # Check if this paper's title is in relevant or irrelevant papers
+        paper_title = paper.title
+        
+        if paper_title in preferences.get("relevant", []):
+            return 1.0  # Highest score for explicitly relevant papers
+        
+        if paper_title in preferences.get("irrelevant", []):
+            return 0.0  # Lowest score for explicitly irrelevant papers
+        
+        # Topic-based relevance for papers not explicitly rated
+        relevant_papers = preferences.get("relevant", [])
+        if not relevant_papers:
+            return 0.5  # Neutral score if no relevant papers
+        
+        # Calculate similarity to known relevant papers
+        max_similarity = 0
+        for rel_title in relevant_papers:
+            similarity = self._calculate_title_similarity(paper_title, rel_title)
+            max_similarity = max(max_similarity, similarity)
+        
+        return max_similarity
+
+    def _calculate_title_similarity(self, title1, title2):
+        """Calculate simple text similarity between two titles"""
+        words1 = set(title1.lower().split())
+        words2 = set(title2.lower().split())
+        
+        if not words1 or not words2:
+            return 0
+            
+        intersection = len(words1.intersection(words2))
+        union = len(words1.union(words2))
+        
+        return intersection / union if union > 0 else 0
+
+    def _get_paper_id(self, paper):
+        """Generate a consistent ID for a paper"""
+        if hasattr(paper, 'id') and paper.id:
+            return paper.id
+        
+        if hasattr(paper, 'doi') and paper.doi:
+            return f"doi:{paper.doi}"
+        
+        # Use title as fallback (not ideal but works for simple cases)
+        return f"title:{paper.title}"
