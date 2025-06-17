@@ -43,7 +43,7 @@ graph TB
     
     subgraph "FastAPI Backend"
         API[FastAPI Server<br/>src/main.py]
-        ROUTES[API Routes<br/>GET /<br/>POST /search/<br/>GET /rag/sessions/{id}]
+        ROUTES[API Routes<br/>GET /<br/>POST /search/<br/>GET /rag/sessions/id]
     end
     
     subgraph "Agent Layer"
@@ -54,7 +54,7 @@ graph TB
     end
     
     subgraph "Storage Layer"
-        LI[Local Index<br/>BM25 + FAISS<br/>data/paper_index*]
+        LI[Local Index<br/>BM25 + FAISS<br/>data/paper_index]
         LD[Learning Data<br/>User Preferences<br/>data/learning/]
         RD[RAG Data<br/>Session History<br/>data/rag_gym/]
     end
