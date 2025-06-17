@@ -205,103 +205,103 @@ def search_papers(query: str, user_id: str = "anonymous"):
             logger.error(f"Error in fallback search: {str(e2)}")
             raise HTTPException(status_code=500, detail=f"Search error: {str(e2)}")
 
-@app.post("/feedback/")
-async def submit_feedback(user_id: str, query: str, paper_ids: List[str], 
-                          clicked: List[str], time_spent: float, ratings: Optional[Dict] = None):
-    """Record user feedback for training"""
-    try:
-        # Efficiently create paper objects using utility function
-        papers = create_papers_from_ids(paper_ids + clicked)
+# @app.post("/feedback/")
+# async def submit_feedback(user_id: str, query: str, paper_ids: List[str], 
+#                           clicked: List[str], time_spent: float, ratings: Optional[Dict] = None):
+#     """Record user feedback for training"""
+#     try:
+#         # Efficiently create paper objects using utility function
+#         papers = create_papers_from_ids(paper_ids + clicked)
         
-        # Create paper lists from the dictionary
-        result_papers = [papers[pid] for pid in paper_ids]
-        clicked_papers = [papers[pid] for pid in clicked]
+#         # Create paper lists from the dictionary
+#         result_papers = [papers[pid] for pid in paper_ids]
+#         clicked_papers = [papers[pid] for pid in clicked]
         
-        # Process feedback in background to improve response time
-        def process_feedback():
-            try:
-                # Record in both systems
-                learning_agent.record_user_interaction(
-                    user_id=user_id, 
-                    query=query, 
-                    results=result_papers,
-                    clicked_papers=clicked_papers, 
-                    time_spent=time_spent, 
-                    explicit_feedback=ratings
-                )
+#         # Process feedback in background to improve response time
+#         def process_feedback():
+#             try:
+#                 # Record in both systems
+#                 learning_agent.record_user_interaction(
+#                     user_id=user_id, 
+#                     query=query, 
+#                     results=result_papers,
+#                     clicked_papers=clicked_papers, 
+#                     time_spent=time_spent, 
+#                     explicit_feedback=ratings
+#                 )
                 
-                rag_gym.record_feedback(
-                    user_id=user_id,
-                    query=query,
-                    results=result_papers,
-                    clicked_papers=clicked_papers,
-                    feedback=ratings
-                )
-            except Exception as e:
-                logger.error(f"Error processing feedback: {str(e)}")
+#                 rag_gym.record_feedback(
+#                     user_id=user_id,
+#                     query=query,
+#                     results=result_papers,
+#                     clicked_papers=clicked_papers,
+#                     feedback=ratings
+#                 )
+#             except Exception as e:
+#                 logger.error(f"Error processing feedback: {str(e)}")
                 
-        # Run feedback processing in background
-        executor = ThreadPoolExecutor(max_workers=1)
-        executor.submit(process_feedback)
+#         # Run feedback processing in background
+#         executor = ThreadPoolExecutor(max_workers=1)
+#         executor.submit(process_feedback)
         
-        return {"status": "success"}
-    except Exception as e:
-        logger.error(f"Error recording feedback: {str(e)}")
-        return {"status": "error", "message": str(e)}
+#         return {"status": "success"}
+#     except Exception as e:
+#         logger.error(f"Error recording feedback: {str(e)}")
+#         return {"status": "error", "message": str(e)}
 
-@app.get("/explain/{paper_id}")
-def explain_paper_relevance(paper_id: str, query: str):
-    """Explain why a paper is relevant to the query"""
-    try:
-        # Create a Paper object from the ID
-        paper = Paper(id=paper_id, title=paper_id)
+# @app.get("/explain/{paper_id}")
+# def explain_paper_relevance(paper_id: str, query: str):
+#     """Explain why a paper is relevant to the query"""
+#     try:
+#         # Create a Paper object from the ID
+#         paper = Paper(id=paper_id, title=paper_id)
         
-        # Convert to dictionary for processing
-        paper_dict = paper_to_dict(paper)
+#         # Convert to dictionary for processing
+#         paper_dict = paper_to_dict(paper)
         
-        # Calculate relevance using RAG-Gym's utility function
-        if not hasattr(rag_gym, "_calculate_query_relevance"):
-            return {"error": "Explanation functionality not available"}
+#         # Calculate relevance using RAG-Gym's utility function
+#         if not hasattr(rag_gym, "_calculate_query_relevance"):
+#             return {"error": "Explanation functionality not available"}
             
-        relevance_score = rag_gym._calculate_query_relevance(paper_dict, query)
+#         relevance_score = rag_gym._calculate_query_relevance(paper_dict, query)
         
-        # Extract matched terms between query and paper
-        query_terms = set(query.lower().split())
-        title_terms = set(paper_dict.get("title", "").lower().split())
-        abstract_terms = set(paper_dict.get("abstract", "").lower().split())
+#         # Extract matched terms between query and paper
+#         query_terms = set(query.lower().split())
+#         title_terms = set(paper_dict.get("title", "").lower().split())
+#         abstract_terms = set(paper_dict.get("abstract", "").lower().split())
         
-        # Calculate term matches
-        matches = {
-            "title": list(query_terms.intersection(title_terms)),
-            "abstract": list(query_terms.intersection(abstract_terms))
-        }
+#         # Calculate term matches
+#         matches = {
+#             "title": list(query_terms.intersection(title_terms)),
+#             "abstract": list(query_terms.intersection(abstract_terms))
+#         }
         
-        # Generate explanation
-        explanation = (
-            f"This paper has a relevance score of {relevance_score:.2f} for your query. "
-            f"It contains {len(matches['title'])} matching terms in the title and "
-            f"{len(matches['abstract'])} matching terms in the abstract."
-        )
+#         # Generate explanation
+#         explanation = (
+#             f"This paper has a relevance score of {relevance_score:.2f} for your query. "
+#             f"It contains {len(matches['title'])} matching terms in the title and "
+#             f"{len(matches['abstract'])} matching terms in the abstract."
+#         )
         
-        return {
-            "relevance_score": relevance_score,
-            "matches": matches,
-            "explanation": explanation
-        }
-    except Exception as e:
-        logger.error(f"Error explaining relevance: {str(e)}")
-        return {"error": str(e)}
+#         return {
+#             "relevance_score": relevance_score,
+#             "matches": matches,
+#             "explanation": explanation
+#         }
+#     except Exception as e:
+#         logger.error(f"Error explaining relevance: {str(e)}")
+#         return {"error": str(e)}
 
-@app.get("/recommendations/{paper_id}")
-async def get_recommendations(paper_id: str, limit: int = 5):
-    """Get papers similar to the specified paper"""
-    try:
-        paper = Paper(id=paper_id, title=paper_id)
-        similar_papers = learning_agent.recommend_related_papers(paper, limit=limit)
-        return {"recommendations": [paper_to_dict(p) for p in similar_papers]}
-    except Exception as e:
-        logger.error(f"Error getting recommendations: {str(e)}")
-        return {"error": str(e)}
+# @app.get("/recommendations/{paper_id}")
+# async def get_recommendations(paper_id: str, limit: int = 5):
+#     """Get papers similar to the specified paper"""
+#     try:
+#         paper = Paper(id=paper_id, title=paper_id)
+#         similar_papers = learning_agent.recommend_related_papers(paper, limit=limit)
+#         return {"recommendations": [paper_to_dict(p) for p in similar_papers]}
+#     except Exception as e:
+#         logger.error(f"Error getting recommendations: {str(e)}")
+#         return {"error": str(e)}
 
 @app.get("/rag/sessions/{session_id}")
 def get_session_status(session_id: str):
