@@ -2,6 +2,11 @@
 
 A comprehensive multi-agent AI platform for intelligent research paper discovery, personalization, and recommendation. This system integrates multiple academic databases and uses advanced RAG (Retrieval-Augmented Generation) techniques to provide highly relevant research papers based on user queries.
 
+## 📄 Paper
+
+This project is based on the research paper published in IEEE: 
+**[Research Paper Retrieval System](https://ieeexplore.ieee.org/document/11081082)**
+
 ## Table of Contents
 1. [Features](#features)
 2. [System Architecture](#system-architecture)
